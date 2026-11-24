@@ -15,6 +15,41 @@ from recipients import RecipientsError, load_recipients
 
 logger = logging.getLogger(__name__)
 
+_SMTP_REJECTIONS = (
+    smtplib.SMTPAuthenticationError,
+    smtplib.SMTPConnectError,
+    smtplib.SMTPHeloError,
+    smtplib.SMTPNotSupportedError,
+    smtplib.SMTPRecipientsRefused,
+    smtplib.SMTPSenderRefused,
+)
+
+
+class SMTPBeforeSendError(smtplib.SMTPException):
+    """Sending stopped before the message could be submitted."""
+
+
+class SMTPDeliveryUncertain(smtplib.SMTPException):
+    """The server may have accepted the message."""
+
+
+class SMTPPartialDelivery(smtplib.SMTPRecipientsRefused, SMTPDeliveryUncertain):
+    """At least one recipient was refused and the message was accepted for others."""
+
+
+def _is_smtp_rejection(error):
+    if isinstance(error, SMTPDeliveryUncertain):
+        return False
+    if isinstance(error, smtplib.SMTPDataError):
+        return 400 <= error.smtp_code < 600
+    return isinstance(error, _SMTP_REJECTIONS)
+
+
+def is_definite_send_failure(error):
+    return isinstance(error, (SMTPBeforeSendError, ValueError, FileNotFoundError, PermissionError)) or (
+        _is_smtp_rejection(error)
+    )
+
 
 def _parse_address(value, setting):
     try:
@@ -51,6 +86,41 @@ def _load_email_settings():
     return host, int(port_value), user, password, recipients
 
 
+def _send_message(smtp, message):
+    try:
+        refused = smtp.send_message(message)
+    except Exception as error:
+        if _is_smtp_rejection(error):
+            raise
+        raise SMTPDeliveryUncertain("Результат отправки неизвестен.") from error
+    if refused:
+        raise SMTPPartialDelivery(refused)
+
+
+def _submit_message(host, port, user, password, message):
+    submission_finished = False
+    delivery_error = None
+    try:
+        with smtplib.SMTP_SSL(
+            host, port, timeout=30, context=ssl.create_default_context()
+        ) as smtp:
+            smtp.login(user.addr_spec, password)
+            try:
+                _send_message(smtp, message)
+            except Exception as error:
+                delivery_error = error
+            submission_finished = True
+    except Exception as error:
+        if not submission_finished:
+            if isinstance(error, _SMTP_REJECTIONS):
+                raise
+            raise SMTPBeforeSendError("Не удалось начать отправку по SMTP.") from error
+        logger.warning("Ошибка закрытия SMTP-соединения (%s)", type(error).__name__)
+
+    if delivery_error is not None:
+        raise delivery_error
+
+
 def send_email(subject, body, attachment_path=None):
     """Send a plain-text email with an optional DOCX. Raise if any recipient is refused."""
     try:
@@ -74,18 +144,14 @@ def send_email(subject, body, attachment_path=None):
     except RecipientsError as error:
         logger.error("Не удалось подготовить письмо: %s", error)
         raise
-    except (OSError, ValueError) as error:
+    except Exception as error:
         logger.error("Не удалось подготовить письмо (%s)", type(error).__name__)
-        raise
+        if is_definite_send_failure(error):
+            raise
+        raise SMTPBeforeSendError("Не удалось подготовить письмо.") from error
 
     try:
-        with smtplib.SMTP_SSL(
-            host, port, timeout=30, context=ssl.create_default_context()
-        ) as smtp:
-            smtp.login(user.addr_spec, password)
-            refused = smtp.send_message(message)
-            if refused:
-                raise smtplib.SMTPRecipientsRefused(refused)
+        _submit_message(host, port, user, password, message)
     except smtplib.SMTPRecipientsRefused as error:
         logger.error(
             "SMTP-сервер отклонил получателей: %d из %d",
