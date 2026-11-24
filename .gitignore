@@ -5,3 +5,6 @@ __pycache__/
 /recipients.json
 /.recipients.json.*.tmp
 /recipients.json.lock
+/mailing_history.json
+/.mailing_history.json.*.tmp
+/mailing_history.json.lock

@@ -172,15 +172,47 @@ class SendEmailTests(unittest.TestCase):
                 email_sender.send_email("Subject", "Body")
 
         self.assertEqual(raised.exception.recipients, refused)
+        self.assertFalse(email_sender.is_definite_send_failure(raised.exception))
         self.assertEqual([record.levelname for record in logs.records], ["ERROR"])
         self.assertIn("1 из 2", logs.output[0])
 
-    def test_propagates_connection_timeout(self):
+    def test_connection_timeout_is_a_definite_failure(self):
         error = TimeoutError("SMTP timed out")
         self.connect.side_effect = error
 
         with self.assertLogs("email_sender", level="ERROR"):
-            with self.assertRaises(TimeoutError) as raised:
+            with self.assertRaises(email_sender.SMTPBeforeSendError) as raised:
+                email_sender.send_email("Subject", "Body")
+
+        self.assertIs(raised.exception.__cause__, error)
+        self.assertTrue(email_sender.is_definite_send_failure(raised.exception))
+
+    def test_timeout_during_submission_is_uncertain(self):
+        error = TimeoutError("SMTP timed out during submission")
+        self.server.send_message.side_effect = error
+
+        with self.assertLogs("email_sender", level="ERROR"):
+            with self.assertRaises(email_sender.SMTPDeliveryUncertain) as raised:
+                email_sender.send_email("Subject", "Body")
+
+        self.assertIs(raised.exception.__cause__, error)
+        self.assertFalse(email_sender.is_definite_send_failure(raised.exception))
+
+    def test_all_recipients_refused_is_a_definite_failure(self):
+        error = smtplib.SMTPRecipientsRefused({"one@example.com": (550, b"Refused")})
+        self.server.send_message.side_effect = error
+
+        with self.assertLogs("email_sender", level="ERROR"):
+            with self.assertRaises(smtplib.SMTPRecipientsRefused) as raised:
                 email_sender.send_email("Subject", "Body")
 
         self.assertIs(raised.exception, error)
+        self.assertTrue(email_sender.is_definite_send_failure(raised.exception))
+
+    def test_quit_failure_does_not_change_confirmed_acceptance(self):
+        self.connect.return_value.__exit__.side_effect = smtplib.SMTPResponseException(500, b"QUIT failed")
+
+        with self.assertLogs("email_sender", level="INFO") as logs:
+            email_sender.send_email("Subject", "Body")
+
+        self.assertEqual([record.levelname for record in logs.records], ["WARNING", "INFO"])
