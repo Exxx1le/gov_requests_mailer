@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly government documents mailing
+
+[Timer]
+OnCalendar=Mon *-*-* 09:00:00 Europe/Moscow
+AccuracySec=1s
+Persistent=true
+Unit=gov-mailer.service
+
+[Install]
+WantedBy=timers.target

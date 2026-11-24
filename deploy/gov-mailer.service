@@ -1,0 +1,16 @@
+[Unit]
+Description=Government documents mailer
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=@SERVICE_UID@
+WorkingDirectory=@PROJECT_DIR@/.
+ExecStart=:/usr/bin/env -- "@PYTHON_BIN@" -B main.py
+Restart=no
+NoNewPrivileges=true
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gov-mailer
