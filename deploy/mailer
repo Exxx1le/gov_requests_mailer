@@ -1,0 +1,108 @@
+#!/bin/bash
+set -euo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+usage() {
+    cat <<'HELP'
+Управление рассылкой нормативных документов
+
+  mailer enable   Включить и запустить таймер
+  mailer disable  Остановить таймер и отключить запуск при загрузке
+  mailer status   Показать состояние сервиса и таймера
+  mailer next     Показать следующий запуск по московскому времени
+  mailer send [--force] [--start-date YYYY-MM-DD --end-date YYYY-MM-DD]
+                  Отправить подборку вручную
+  mailer list     Показать адресатов
+  mailer add EMAIL
+  mailer remove EMAIL
+  mailer count    Показать число адресатов
+  mailer migrate  Перенести адресатов из .env или окружения
+  mailer history  Показать историю рассылок
+  mailer logs     Показать последние записи журнала
+  mailer help     Показать эту справку
+
+Запуск от другого пользователя и управление таймером могут требовать sudo.
+HELP
+}
+
+fail() {
+    printf 'Ошибка: %s\n' "$1" >&2
+    exit 2
+}
+
+no_arguments() {
+    (( $# == 0 )) || fail "Эта команда не принимает аргументы."
+}
+
+as_admin() {
+    if (( EUID == 0 )); then
+        exec "$@"
+    fi
+    exec /usr/bin/sudo -- "$@"
+}
+
+as_service_user() {
+    if (( EUID != service_uid )); then
+        if (( EUID == 0 )); then
+            exec /usr/sbin/runuser -u "$service_user" -- /usr/local/bin/mailer "$@"
+        fi
+        exec /usr/bin/sudo -H -u "$service_user" -- /usr/local/bin/mailer "$@"
+    fi
+    umask 077
+    cd -- "$project_dir"
+}
+
+command=${1:-help}
+if (( $# )); then
+    shift
+fi
+case "$command" in
+    help|-h|--help)
+        no_arguments "$@"
+        usage
+        ;;
+    enable)
+        no_arguments "$@"
+        as_admin /usr/bin/systemctl enable --now gov-mailer.timer
+        ;;
+    disable)
+        no_arguments "$@"
+        as_admin /usr/bin/systemctl disable --now gov-mailer.timer
+        ;;
+    status)
+        no_arguments "$@"
+        exec /usr/bin/systemctl --no-pager status gov-mailer.service gov-mailer.timer
+        ;;
+    next)
+        no_arguments "$@"
+        next=$(TZ=Europe/Moscow /usr/bin/systemctl show -p NextElapseUSecRealtime --value gov-mailer.timer)
+        case "$next" in
+            ''|0|n/a) printf 'Следующий запуск не запланирован.\n' ;;
+            *) printf 'Следующий запуск (Москва): %s\n' "$next" ;;
+        esac
+        ;;
+    send)
+        as_service_user "$command" "$@"
+        exec /usr/bin/systemd-cat --identifier=gov-mailer -- \
+            "$project_dir/.venv/bin/python" -B main.py "$@"
+        ;;
+    list|add|remove|count|migrate)
+        as_service_user "$command" "$@"
+        exec "$project_dir/.venv/bin/python" -B recipients.py "$command" "$@"
+        ;;
+    history)
+        no_arguments "$@"
+        as_service_user "$command"
+        exec "$project_dir/.venv/bin/python" -B main.py --history
+        ;;
+    logs)
+        no_arguments "$@"
+        exec /usr/bin/journalctl --no-pager -n 100 \
+            _SYSTEMD_UNIT=gov-mailer.service + UNIT=gov-mailer.service \
+            + _SYSTEMD_UNIT=gov-mailer.timer + UNIT=gov-mailer.timer \
+            + SYSLOG_IDENTIFIER=gov-mailer
+        ;;
+    *)
+        fail "Неизвестная команда. См. mailer help."
+        ;;
+esac
