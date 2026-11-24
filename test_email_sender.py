@@ -1,3 +1,4 @@
+import json
 import os
 import smtplib
 import tempfile
@@ -16,12 +17,16 @@ class SendEmailTests(unittest.TestCase):
     settings = {
         "EMAIL_USER": "sender@example.com",
         "EMAIL_PASSWORD": "test-only-password",
-        "RECIPIENTS": "one@example.com, two@example.com",
     }
 
     def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.recipients_file = Path(directory.name) / "recipients.json"
+        self.recipients_file.write_text(json.dumps(["one@example.com", "two@example.com"]), encoding="utf-8")
         for patcher in (
             patch.dict(os.environ, self.settings, clear=True),
+            patch("recipients.RECIPIENTS_FILE", self.recipients_file),
             patch("email_sender.load_dotenv"),
             patch("email_sender.ssl.create_default_context"),
             patch("email_sender.smtplib.SMTP_SSL"),
@@ -73,7 +78,10 @@ class SendEmailTests(unittest.TestCase):
         self.assertEqual(self.connect.call_args[0], ("smtp.example.com", 2465))
         self.server.login.assert_called_once_with("environment@example.com", "literal${test}")
         message = self.server.send_message.call_args[0][0]
-        self.assertEqual(message["To"].addresses[0].addr_spec, "from-file@example.com")
+        self.assertEqual(
+            [address.addr_spec for address in message["To"].addresses],
+            ["one@example.com", "two@example.com"],
+        )
 
     def test_sends_docx_with_a_cyrillic_name(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -99,7 +107,6 @@ class SendEmailTests(unittest.TestCase):
             "EMAIL_PORT": ("", "abc", "4_65", "0", "65536"),
             "EMAIL_USER": ("", "sender", "invalid@@example.com"),
             "EMAIL_PASSWORD": ("", "  "),
-            "RECIPIENTS": ("", "one@example.com,", "invalid", "one@example.com, bad"),
         }
         for setting, values in cases.items():
             for value in values:
@@ -107,6 +114,27 @@ class SendEmailTests(unittest.TestCase):
                     with self.assertLogs("email_sender", level="ERROR"):
                         with self.assertRaisesRegex(ValueError, setting):
                             email_sender.send_email("Subject", "Body")
+        self.connect.assert_not_called()
+
+    def test_missing_or_empty_json_prevents_sending_even_with_legacy_recipients(self):
+        self.recipients_file.unlink()
+        with patch.dict(os.environ, {"RECIPIENTS": "legacy@example.com"}):
+            for exists in (False, True):
+                with self.subTest(exists=exists):
+                    if exists:
+                        self.recipients_file.write_text("[]", encoding="utf-8")
+                    with self.assertLogs("email_sender", level="ERROR") as logs:
+                        with self.assertRaisesRegex(ValueError, "Список получателей пуст"):
+                            email_sender.send_email("Subject", "Body")
+                    self.assertIn("Список получателей пуст", logs.output[0])
+        self.connect.assert_not_called()
+
+    def test_invalid_json_prevents_sending(self):
+        self.recipients_file.write_text("{invalid", encoding="utf-8")
+
+        with self.assertLogs("email_sender", level="ERROR"), self.assertRaisesRegex(ValueError, "повреждён"):
+            email_sender.send_email("Subject", "Body")
+
         self.connect.assert_not_called()
 
     def test_rejects_an_invalid_or_missing_attachment_before_connecting(self):

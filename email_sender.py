@@ -10,6 +10,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from recipients import RecipientsError, load_recipients
+
 
 logger = logging.getLogger(__name__)
 
@@ -43,10 +45,9 @@ def _load_email_settings():
     if not password.strip():
         raise ValueError("EMAIL_PASSWORD: требуется пароль SMTP")
 
-    recipients = [
-        _parse_address(value.strip(), "RECIPIENTS")
-        for value in os.getenv("RECIPIENTS", "").split(",")
-    ]
+    recipients = load_recipients()
+    if not recipients:
+        raise RecipientsError("Список получателей пуст. Добавьте адрес через recipients.py add EMAIL.")
     return host, int(port_value), user, password, recipients
 
 
@@ -57,7 +58,7 @@ def send_email(subject, body, attachment_path=None):
         message = EmailMessage()
         message["Subject"] = subject
         message["From"] = user
-        message["To"] = recipients
+        message["To"] = ", ".join(recipients)
         message.set_content(body)
 
         if attachment_path is not None:
@@ -70,6 +71,9 @@ def send_email(subject, body, attachment_path=None):
                 subtype="vnd.openxmlformats-officedocument.wordprocessingml.document",
                 filename=attachment.name,
             )
+    except RecipientsError as error:
+        logger.error("Не удалось подготовить письмо: %s", error)
+        raise
     except (OSError, ValueError) as error:
         logger.error("Не удалось подготовить письмо (%s)", type(error).__name__)
         raise
