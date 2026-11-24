@@ -1,6 +1,5 @@
 import os
 from datetime import timedelta
-from pathlib import Path
 
 import docx
 import requests
@@ -129,25 +128,6 @@ def save_to_doc(documents_by_authority, filename):
     doc.save(output_path)
 
     return output_path
-
-
-def generate_date_range(start_date, end_date):
-    """
-    Generates a list of dates between start_date and end_date (inclusive).
-
-    Args:
-        start_date (datetime.date): Start date
-        end_date (datetime.date): End date
-
-    Returns:
-        list: List of dates in DD.MM.YYYY format
-    """
-    dates = []
-    current_date = start_date
-    while current_date <= end_date:
-        dates.append(current_date.strftime("%d.%m.%Y"))
-        current_date += timedelta(days=1)
-    return dates
 
 
 def process_documents(start_date, end_date):
