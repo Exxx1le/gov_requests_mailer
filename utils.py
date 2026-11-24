@@ -1,5 +1,7 @@
+import logging
 import os
 from datetime import timedelta
+from time import sleep
 
 import docx
 import requests
@@ -9,6 +11,7 @@ from constants import AUTHORITY_ID, AUTHORITY_NAMES
 
 # URL для запроса документов
 API_URL = "http://publication.pravo.gov.ru/api/Documents"
+logger = logging.getLogger(__name__)
 
 
 def fetch_documents_by_date(date, authority_id):
@@ -23,6 +26,10 @@ def fetch_documents_by_date(date, authority_id):
 
     Returns:
         list: List of found documents (excluding resolutions)
+
+    Raises:
+        requests.exceptions.RequestException: The request failed.
+        ValueError: The response was not valid JSON or had an unexpected structure.
     """
     params = {
         "periodType": "day",
@@ -30,19 +37,41 @@ def fetch_documents_by_date(date, authority_id):
         "SignatoryAuthorityId": authority_id
     }
 
-    try:
-        response = requests.get(API_URL, params=params)
-        response.raise_for_status()
-        data = response.json()
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = requests.get(API_URL, params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            items = data.get("items") if isinstance(data, dict) else None
+            if not isinstance(items, list) or any(not isinstance(doc, dict) for doc in items):
+                raise ValueError("Ответ API должен содержать список объектов в поле 'items'")
 
-        # Фильтруем результаты, исключая распоряжения
-        return [
-            doc for doc in data.get("items", [])
-            if doc.get("documentTypeId") != "7ff5b3b5-3757-44f1-bb76-3766cabe3593"
-        ]
-    except requests.exceptions.RequestException as e:
-        print(f"Ошибка при выполнении запроса для даты {date}: {e}")
-        return []
+            # Фильтруем результаты, исключая распоряжения
+            return [
+                doc for doc in items
+                if doc.get("documentTypeId") != "7ff5b3b5-3757-44f1-bb76-3766cabe3593"
+            ]
+        except (requests.exceptions.RequestException, ValueError) as error:
+            if isinstance(error, requests.exceptions.HTTPError) and error.response is not None:
+                status = error.response.status_code
+                retryable = status == 429 or 500 <= status < 600
+            else:
+                retryable = isinstance(error, (
+                    requests.exceptions.Timeout,
+                    requests.exceptions.ConnectionError,
+                    requests.exceptions.ChunkedEncodingError,
+                )) and not isinstance(error, requests.exceptions.SSLError)
+
+            will_retry = retryable and attempt < max_attempts
+            logger.log(
+                logging.WARNING if will_retry else logging.ERROR,
+                "Ошибка запроса за %s, орган %s, попытка %d/%d: %s",
+                date, authority_id, attempt, max_attempts, error,
+            )
+            if not will_retry:
+                raise
+            sleep(2 ** (attempt - 1))
 
 
 def add_hyperlink(paragraph, text, url):
