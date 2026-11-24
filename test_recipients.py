@@ -56,7 +56,10 @@ class RecipientsTests(unittest.TestCase):
         original = self.store.read_bytes()
         cases = (
             (("add", "ONE@EXAMPLE.COM"), "уже есть"),
+            (("add", ""), "Некорректный адрес"),
+            (("add", " \t "), "Некорректный адрес"),
             (("add", "broken"), "Некорректный адрес"),
+            (("add", "one@"), "Некорректный адрес"),
             (("add", "one@example..com"), "Некорректный адрес"),
             (("remove", "missing@example.com"), "не найден"),
         )
@@ -69,7 +72,7 @@ class RecipientsTests(unittest.TestCase):
 
     def test_corrupt_or_invalid_json_is_never_replaced(self):
         for original in (
-            b"[", b"\xff", b"{}", b"[42]", b'["invalid"]',
+            b"[", b"\xff", b"{}", b"[42]", b'["invalid"]', b'[""]', b'["   "]',
             b'["one@example.com", "ONE@example.com"]',
         ):
             with self.subTest(original=original):
@@ -80,6 +83,22 @@ class RecipientsTests(unittest.TestCase):
                 self.assertEqual(self.cli("remove", "new@example.com")[0], 1)
                 self.assertEqual(self.cli("migrate")[0], 1)
                 self.assertEqual(self.store.read_bytes(), original)
+
+    def test_blank_recipient_address_does_not_call_standard_parser(self):
+        with patch("recipients.Address") as parser:
+            for value in ("", " \t "):
+                with self.subTest(value=value), self.assertRaises(recipients.RecipientsError):
+                    recipients._validate_address(value)
+        parser.assert_not_called()
+
+    def test_recipient_parser_index_error_is_reported_as_invalid_address(self):
+        with patch("recipients.Address", side_effect=IndexError) as parser:
+            status, _, error = self.cli("add", "recipient@")
+
+        parser.assert_called_once_with(addr_spec="recipient@")
+        self.assertEqual(status, 1)
+        self.assertIn("Некорректный адрес", error)
+        self.assertFalse(self.store.exists())
 
     def test_migrates_dotenv_once_without_modifying_it(self):
         dotenv_file = self.project / ".env"

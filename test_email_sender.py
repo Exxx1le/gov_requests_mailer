@@ -105,7 +105,7 @@ class SendEmailTests(unittest.TestCase):
         cases = {
             "EMAIL_HOST": ("", "https://smtp.example.com", "-invalid.example.com"),
             "EMAIL_PORT": ("", "abc", "4_65", "0", "65536"),
-            "EMAIL_USER": ("", "sender", "invalid@@example.com"),
+            "EMAIL_USER": ("", " \t ", "sender", "sender@", "invalid@@example.com"),
             "EMAIL_PASSWORD": ("", "  "),
         }
         for setting, values in cases.items():
@@ -114,6 +114,23 @@ class SendEmailTests(unittest.TestCase):
                     with self.assertLogs("email_sender", level="ERROR"):
                         with self.assertRaisesRegex(ValueError, setting):
                             email_sender.send_email("Subject", "Body")
+        self.connect.assert_not_called()
+
+    def test_blank_sender_address_does_not_call_standard_parser(self):
+        with patch("email_sender.Address") as parser:
+            for value in ("", " \t "):
+                with self.subTest(value=value), self.assertRaisesRegex(ValueError, "EMAIL_USER"):
+                    email_sender._parse_address(value, "EMAIL_USER")
+        parser.assert_not_called()
+
+    def test_sender_parser_index_error_is_reported_as_invalid_setting(self):
+        with patch.dict(os.environ, {"EMAIL_USER": "sender@"}), patch(
+            "email_sender.Address", side_effect=IndexError
+        ) as parser:
+            with self.assertLogs("email_sender", level="ERROR"), self.assertRaisesRegex(ValueError, "EMAIL_USER"):
+                email_sender.send_email("Subject", "Body")
+
+        parser.assert_called_once_with(addr_spec="sender@")
         self.connect.assert_not_called()
 
     def test_missing_or_empty_json_prevents_sending_even_with_legacy_recipients(self):

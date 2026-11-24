@@ -52,13 +52,17 @@ def is_definite_send_failure(error):
 
 
 def _parse_address(value, setting):
+    error_message = f"{setting}: ожидается корректный адрес электронной почты"
+    if not value.strip():
+        raise ValueError(error_message)
+
     try:
         address = Address(addr_spec=value)
         if address.username and address.domain:
             return address
-    except (ValueError, HeaderParseError):
+    except (ValueError, HeaderParseError, IndexError):
         pass
-    raise ValueError(f"{setting}: ожидается корректный адрес электронной почты")
+    raise ValueError(error_message)
 
 
 def _load_email_settings():

@@ -22,10 +22,14 @@ class RecipientsError(ValueError):
 
 
 def _validate_address(value):
+    error_message = "Некорректный адрес электронной почты."
+    if not value.strip():
+        raise RecipientsError(error_message)
+
     try:
         address = Address(addr_spec=value)
-    except (ValueError, HeaderParseError):
-        raise RecipientsError("Некорректный адрес электронной почты.") from None
+    except (ValueError, HeaderParseError, IndexError):
+        raise RecipientsError(error_message) from None
     if (
         not address.username
         or address.addr_spec != value
@@ -34,7 +38,7 @@ def _validate_address(value):
             for label in address.domain.split(".")
         )
     ):
-        raise RecipientsError("Некорректный адрес электронной почты.")
+        raise RecipientsError(error_message)
     return value
 
 
