@@ -1,7 +1,9 @@
 import logging
 import os
 from datetime import timedelta
-from time import sleep
+from pathlib import Path
+from stat import S_ISDIR, S_ISREG
+from time import sleep, time
 
 import docx
 import requests
@@ -201,3 +203,82 @@ def process_documents(start_date, end_date):
     )
 
     return output_path
+
+
+def _generated_directory():
+    directory = Path.cwd().resolve() / "generated"
+    try:
+        mode = directory.lstat().st_mode
+    except FileNotFoundError:
+        return None
+
+    if not S_ISDIR(mode) or directory.resolve() != directory:
+        raise ValueError(f"Ожидалась обычная директория: {directory}")
+    return directory
+
+
+def _unlink_generated_docx(path):
+    if path.resolve() != path:
+        raise ValueError(f"Путь к документу проходит через ссылку: {path}")
+    path.unlink(missing_ok=True)
+    logger.info("Удалён сформированный документ: %s", path)
+
+
+def cleanup_generated_file(file_path):
+    """Remove a regular DOCX file within generated/ if it exists."""
+    path = Path(file_path)
+    try:
+        directory = _generated_directory()
+        if directory is None:
+            return
+        if not path.is_absolute():
+            path = directory.parent / path
+        if (
+            path.suffix.lower() != ".docx"
+            or directory not in path.parents
+            or ".." in path.parts
+            or (os.name == "nt" and ":" in path.name)
+        ):
+            raise ValueError(f"Ожидался путь к файлу .docx внутри generated/: {path}")
+
+        try:
+            mode = path.lstat().st_mode
+        except FileNotFoundError:
+            return
+        if not S_ISREG(mode):
+            raise ValueError(f"Ожидался обычный файл .docx: {path}")
+        _unlink_generated_docx(path)
+    except (OSError, ValueError, RuntimeError):
+        logger.exception("Не удалось удалить сформированный документ: %s", path)
+        raise
+
+
+def cleanup_old_files(max_age_days=7):
+    """Remove top-level DOCX files in generated/ older than the given age by mtime."""
+    if max_age_days < 0:
+        raise ValueError("Возраст документов не может быть отрицательным")
+    cutoff = time() - timedelta(days=max_age_days).total_seconds()
+
+    path = Path("generated")
+    try:
+        directory = _generated_directory()
+        if directory is None:
+            return
+        path = directory
+        try:
+            entries = list(directory.iterdir())
+        except FileNotFoundError:
+            return
+
+        for path in entries:
+            if path.suffix.lower() != ".docx":
+                continue
+            try:
+                metadata = path.lstat()
+            except FileNotFoundError:
+                continue
+            if S_ISREG(metadata.st_mode) and metadata.st_mtime < cutoff:
+                _unlink_generated_docx(path)
+    except (OSError, ValueError, RuntimeError):
+        logger.exception("Не удалось очистить сформированные документы: %s", path)
+        raise
