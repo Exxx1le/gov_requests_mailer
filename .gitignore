@@ -2,3 +2,6 @@ generated/
 __pycache__/
 .env
 .venv/
+/recipients.json
+/.recipients.json.*.tmp
+/recipients.json.lock
